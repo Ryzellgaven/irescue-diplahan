@@ -10,20 +10,22 @@ The shared backend supports resident registration and emergency reporting, staff
 - PHP 8.1+ with PDO MySQL, Fileinfo, and mbstring on the API host
 - A persistent MySQL-compatible managed database
 
-## Deploy
+## Deploy on Render
 
-1. Create a database and restricted database user with your hosting provider. Keep the database private and allow connections only from the API host.
-2. Select that database in your provider's SQL console/phpMyAdmin and import `backend/database.sql`.
-3. Deploy the contents of `backend/api` to a PHP-enabled host. Set `LDRRMO_DB_HOST`, `LDRRMO_DB_PORT`, `LDRRMO_DB_NAME`, `LDRRMO_DB_USER`, and `LDRRMO_DB_PASSWORD` as server-side environment variables. The API does not include local or default database credentials.
-4. Configure `LDRRMO_PRIVATE_UPLOAD_DIR` as an existing writable, persistent directory outside the public web root. Set `LDRRMO_ALLOWED_ORIGINS` to the exact HTTPS frontend origin when frontend and API use different origins. For a same-origin API, it can remain unset.
-5. Build and deploy the frontend. Set `VITE_API_URL` before building to the API entry point, for example `https://api.example.gov.ph/index.php`; if the API is served from the same origin at `/api/index.php`, the default works without this setting.
-6. Configure PHP upload limits to at least 6 MB for report photos, then provision the first administrator using the procedure in [Backend deployment](backend/SETUP.md).
+This repository includes a Docker image and Render Blueprint for a single-origin deployment: Apache serves the built React app and PHP API together. Render does **not** provide a managed MySQL database, so create a persistent MySQL-compatible database with a separate provider before deploying. Do not select Render PostgreSQL; this API uses MySQL-specific PDO and schema.
 
-Use the hosting provider's persistent database service, automated backups, and monitoring for continuous availability; a frontend host alone does not provide a database or guarantee uptime. Never put database credentials in frontend environment variables or commit them to source control.
+1. Create a persistent MySQL database and a restricted application user with a provider that accepts connections from Render. Allow the connection from Render as directed by that provider, and enable TLS if offered.
+2. Select the application database in the provider's SQL console/phpMyAdmin and import `backend/database.sql`.
+3. In Render, choose **New → Blueprint**, select this GitHub repository, and apply `render.yaml`. The Blueprint creates the Docker web service and a persistent disk for PHP sessions and private report photos. The disk requires a paid Render web service.
+4. In the new service's **Environment** settings, enter `LDRRMO_DB_HOST`, `LDRRMO_DB_PORT`, `LDRRMO_DB_NAME`, `LDRRMO_DB_USER`, and `LDRRMO_DB_PASSWORD` from the MySQL provider. If the provider requires a CA file for TLS, add it as a Render secret file and set `LDRRMO_DB_SSL_CA` to that file's path. Never put database credentials in `VITE_` variables.
+5. Wait for `/healthz.php` to report healthy, then open the Render service URL. The frontend is built with `VITE_API_URL=/api/index.php`; the frontend and API share HTTPS origin, so no CORS allowlist is needed.
+6. In the Render service's **Shell**, provision the first administrator using the instructions in [Render deployment](backend/SETUP.md). No default account exists.
+
+Use the database provider's persistent storage, automated backups, and monitoring for continuous availability. Render's persistent disk preserves uploads and PHP sessions across deploys, but is not a substitute for database backups or a highly available database plan.
 
 ## Local development
 
-Run the frontend with `npm install` and `npm run dev`. Point `VITE_API_URL` at a running PHP API. The project no longer assumes XAMPP or a localhost API, and it does not provide a mock backend.
+Run the frontend with `pnpm install` and `pnpm dev`. Point `VITE_API_URL` at a running PHP API. The project no longer assumes XAMPP or a localhost API, and it does not provide a mock backend.
 
 ## Backend and security
 

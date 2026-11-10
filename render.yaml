@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: irescue-diplahan
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz.php
+    envVars:
+      - key: LDRRMO_DB_HOST
+        sync: false
+      - key: LDRRMO_DB_PORT
+        sync: false
+      - key: LDRRMO_DB_NAME
+        sync: false
+      - key: LDRRMO_DB_USER
+        sync: false
+      - key: LDRRMO_DB_PASSWORD
+        sync: false
+      - key: LDRRMO_PRIVATE_UPLOAD_DIR
+        value: /var/data/report-uploads
+    disk:
+      name: report-uploads
+      mountPath: /var/data
+      sizeGB: 1

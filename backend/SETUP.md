@@ -1,16 +1,18 @@
-# Backend deployment
+# Render deployment
 
-The application backend is a PHP API connected to a MySQL-compatible database. Deploy the API and database on managed hosting; neither XAMPP nor a developer's computer needs to stay running.
+The repository's `render.yaml` deploys a single Docker web service. Apache serves the compiled Vite frontend and PHP API from the same HTTPS origin. Render does not provide managed MySQL; create a persistent MySQL-compatible database with a separate provider first.
 
-## 1. Create and initialize the database
+## 1. Prepare MySQL
 
-Create a persistent database and a restricted application user with your database provider. In the provider console, select the newly created database and import `database.sql`. The schema file does not create or select a database, so it works with managed providers that restrict those operations.
+Create a persistent MySQL database and restricted application user. Configure the provider to accept connections from Render and use TLS when available. Select the database in the provider's SQL console/phpMyAdmin and import `backend/database.sql`.
 
-For an existing installation created by the former standalone `/xampp` portal, back up `ldrrmo_xampp` first. The legacy `migrate-existing-xampp-stage1.sql` and `migrate-existing-xampp-stage2.sql` scripts are only for that migration and expect the original database name. For an existing unified database, select that database in your SQL client and run `migrate-safe-routes.sql`.
+The schema intentionally does not create or select the database, so it can be imported with restricted provider privileges. Do not use Render PostgreSQL: this API uses MySQL PDO, MySQL schema features, and MySQL advisory locks.
 
-## 2. Deploy the PHP API
+## 2. Create the Render service
 
-Deploy the contents of `backend/api` to a PHP 8.1+ web host with PDO MySQL, Fileinfo, and mbstring enabled. Set these server-side environment variables using the hosting control panel:
+In Render, choose **New → Blueprint**, select this repository, and apply `render.yaml`. This builds the Docker image, exposes the app on Render's assigned port, and attaches a persistent disk at `/var/data` for report uploads and PHP sessions. Render persistent disks require a paid web service and are attached to a single instance.
+
+In the service's **Environment** settings, set:
 
 - `LDRRMO_DB_HOST`
 - `LDRRMO_DB_PORT`
@@ -18,41 +20,35 @@ Deploy the contents of `backend/api` to a PHP 8.1+ web host with PDO MySQL, File
 - `LDRRMO_DB_USER`
 - `LDRRMO_DB_PASSWORD`
 
-The API fails explicitly if database configuration is missing. Do not use a privileged database account or expose the database directly to the public internet.
+For a TLS-required MySQL provider, add its CA certificate as a Render secret file and set `LDRRMO_DB_SSL_CA` to the file path. The API verifies that certificate when configured. Never add database credentials to frontend variables or Git.
 
-For a frontend hosted on a different origin, set `LDRRMO_ALLOWED_ORIGINS` to the exact comma-separated HTTPS origin(s), without a trailing slash. Do not use `*` with session cookies. For a same-origin frontend/API deployment, the variable can remain unset.
+Wait for the `/healthz.php` check to pass. It verifies database connectivity, so the service will not become healthy until all database settings are correct and the provider allows the connection. The Vite bundle calls `/api/index.php` on the same origin; no CORS configuration is needed.
 
-Set `LDRRMO_PRIVATE_UPLOAD_DIR` to an existing writable, persistent directory outside the public web root. This is required for report photos to survive deploys or server restarts. The API accepts JPEG, PNG, WebP, or GIF files up to 5 MB; configure PHP's `upload_max_filesize` and `post_max_size` to at least 6 MB.
+## 3. Provision the first administrator
 
-## 3. Deploy the frontend
+Open the deployed service's **Shell** in Render. Provide the password without putting it in the command history, then run the CLI provisioner:
 
-Set `VITE_API_URL` at build time to the API entry point, such as `https://api.example.gov.ph/index.php`. If the API is available at `/api/index.php` on the same origin, the default is already configured. These `VITE_` values are public frontend configuration; never put secrets in them.
-
-Build with `npm run build` and publish `dist` to a static web host. Configure SPA fallback/rewrite rules so application routes resolve to `index.html`. Use HTTPS for both the frontend and API.
-
-## 4. Provision the first administrator
-
-Run `backend/cli/create-user.php` through the PHP CLI on the API host (or a trusted deployment job) after configuring the same database environment variables. No default password/account exists. Provide a private password through `LDRRMO_NEW_USER_PASSWORD`, then remove it immediately after the command. Example for PowerShell:
-
-```powershell
-$securePassword = Read-Host "Enter an administrator password (12 to 72 bytes)" -AsSecureString
-$passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
-try {
-    $env:LDRRMO_NEW_USER_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
-    php ".\backend\cli\create-user.php" "admin@diplahan.gov.ph" "System Administrator" "admin"
-} finally {
-    Remove-Item Env:LDRRMO_NEW_USER_PASSWORD -ErrorAction SilentlyContinue
-    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
-}
+```sh
+read -s -p "Administrator password: " LDRRMO_NEW_USER_PASSWORD
+export LDRRMO_NEW_USER_PASSWORD
+printf '\n'
+php /opt/ldrrmo/backend/cli/create-user.php "admin@diplahan.gov.ph" "System Administrator" "admin"
+unset LDRRMO_NEW_USER_PASSWORD
 ```
 
-CLI provisioning permits the initial admin only while there is no administrator. It takes a MySQL advisory lock to prevent concurrent first-admin creation. Once the first admin exists, add further users, staff, or administrators through the server-authorized User Management page. Resident self-registration creates only the `resident` role.
+Use a unique password 12 to 72 bytes long. No default administrator is included. Provisioning only creates the first admin when none exists; create later staff and administrators from User Management.
 
-## Operations
+## Runtime and operations
 
-- Operational records are persisted in the configured shared database.
-- Staff routes and admin operations are authorized by the PHP API on every request.
-- The app polls the API periodically for updates.
-- Sensor values must come from an actual registered sensor or trusted gateway. Keep device tokens out of browser code and source control.
-- In-app notifications are delivered from the database. Push/SMS/email require real delivery providers.
-- Configure automated database backups and monitor database/API availability with the hosting provider. Availability depends on those services and their plan; application code alone cannot guarantee 24/7 uptime.
+- The service needs these PHP extensions: PDO MySQL, Fileinfo, and mbstring; the Dockerfile installs them.
+- `LDRRMO_PRIVATE_UPLOAD_DIR` is set to `/var/data/report-uploads` and is on Render's persistent disk. PHP session files are also stored on that disk.
+- PHP upload limits are set to 6 MB. The application rejects media larger than 5 MB.
+- The API recognizes Render's forwarded HTTPS protocol so session cookies are marked `Secure`.
+- `/healthz.php` returns healthy only when the MySQL database answers a query. Check the service logs and database network settings if it fails.
+- Back up the database through the database provider. Render's application disk is not a database backup.
+- A single Render instance avoids local PHP-session files diverging across instances. Do not scale this service horizontally without moving sessions to a shared session store.
+- Render and the database provider's plan determine uptime and backup guarantees; application deployment alone does not guarantee 24/7 availability.
+
+## Existing XAMPP migrations
+
+For an existing installation created by the former standalone `/xampp` portal, back up `ldrrmo_xampp` first. The legacy `migrate-existing-xampp-stage1.sql` and `migrate-existing-xampp-stage2.sql` scripts expect that original database. For an existing unified database, select it in your SQL client and run `migrate-safe-routes.sql`.

@@ -6,7 +6,23 @@ date_default_timezone_set('UTC');
 header('Cache-Control: no-store');
 $allowedOrigins = array_filter(array_map('trim', explode(',', getenv('LDRRMO_ALLOWED_ORIGINS') ?: '')));
 $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-if ($origin !== '' && !in_array($origin, $allowedOrigins, true)) jsonResponse(['error' => ['message' => 'This site is not allowed to access the API.']], 403);
+$forwardedProto = strtolower(trim(explode(',', $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')[0]));
+$isSecureRequest = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || $forwardedProto === 'https';
+$requestScheme = $isSecureRequest ? 'https' : 'http';
+$requestAuthority = '//' . ($_SERVER['HTTP_HOST'] ?? '');
+$requestHost = strtolower((string)parse_url($requestAuthority, PHP_URL_HOST));
+$requestPort = parse_url($requestAuthority, PHP_URL_PORT) ?? ($isSecureRequest ? 443 : 80);
+$originParts = $origin !== '' ? parse_url($origin) : false;
+$originScheme = is_array($originParts) ? strtolower((string)($originParts['scheme'] ?? '')) : '';
+$originHost = is_array($originParts) ? strtolower((string)($originParts['host'] ?? '')) : '';
+$originPort = is_array($originParts) ? ($originParts['port'] ?? ($originScheme === 'https' ? 443 : 80)) : null;
+$isSameOrigin = $origin !== ''
+    && $originScheme === $requestScheme
+    && $originHost === $requestHost
+    && $originPort === $requestPort;
+if ($origin !== '' && !$isSameOrigin && !in_array($origin, $allowedOrigins, true)) {
+    jsonResponse(['error' => ['message' => 'This site is not allowed to access the API.']], 403);
+}
 if ($origin !== '') {
     header("Access-Control-Allow-Origin: {$origin}");
     header('Vary: Origin');
@@ -19,7 +35,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') { http_response_code(20
 ini_set('session.use_strict_mode', '1');
 ini_set('session.use_only_cookies', '1');
 session_name('ldrrmo_session');
-session_set_cookie_params(['lifetime'=>0, 'path'=>'/', 'secure'=>!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off', 'httponly'=>true, 'samesite'=>'Lax']);
+session_set_cookie_params(['lifetime'=>0, 'path'=>'/', 'secure'=>$isSecureRequest, 'httponly'=>true, 'samesite'=>'Lax']);
 session_start();
 try { dispatch(database()); }
 catch (Throwable $e) {
