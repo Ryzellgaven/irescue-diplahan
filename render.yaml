@@ -17,6 +17,20 @@ services:
         sync: false
       - key: LDRRMO_DB_PASSWORD
         sync: false
+      - key: LDRRMO_APP_URL
+        sync: false
+      - key: LDRRMO_SMTP_HOST
+        sync: false
+      - key: LDRRMO_SMTP_PORT
+        value: "465"
+      - key: LDRRMO_SMTP_USERNAME
+        sync: false
+      - key: LDRRMO_SMTP_PASSWORD
+        sync: false
+      - key: LDRRMO_SMTP_SENDER_EMAIL
+        sync: false
+      - key: LDRRMO_SMTP_SENDER_NAME
+        value: LDRRMO Diplahan
       - key: LDRRMO_PRIVATE_UPLOAD_DIR
         value: /var/data/report-uploads
     disk:

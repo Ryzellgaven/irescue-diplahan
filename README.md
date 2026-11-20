@@ -18,8 +18,9 @@ This repository includes a Docker image and Render Blueprint for a single-origin
 2. Select the application database in the provider's SQL console/phpMyAdmin and import `backend/database.sql`.
 3. In Render, choose **New → Blueprint**, select this GitHub repository, and apply `render.yaml`. The Blueprint creates the Docker web service and a persistent disk for PHP sessions and private report photos. The disk requires a paid Render web service.
 4. In the new service's **Environment** settings, enter `LDRRMO_DB_HOST`, `LDRRMO_DB_PORT`, `LDRRMO_DB_NAME`, `LDRRMO_DB_USER`, and `LDRRMO_DB_PASSWORD` from the MySQL provider. If the provider requires a CA file for TLS, add it as a Render secret file and set `LDRRMO_DB_SSL_CA` to that file's path. Never put database credentials in `VITE_` variables.
-5. Wait for `/healthz.php` to report healthy, then open the Render service URL. The frontend is built with `VITE_API_URL=/api/index.php`; the frontend and API share HTTPS origin, so no CORS allowlist is needed.
-6. In the Render service's **Shell**, provision the first administrator using the instructions in [Render deployment](backend/SETUP.md). No default account exists.
+5. In **Environment**, set `LDRRMO_APP_URL` to the service's public HTTPS URL and configure the SMTP sender using `LDRRMO_SMTP_HOST`, `LDRRMO_SMTP_PORT`, `LDRRMO_SMTP_USERNAME`, `LDRRMO_SMTP_PASSWORD`, and `LDRRMO_SMTP_SENDER_EMAIL`. For Gmail, use `smtp.gmail.com`, port `465`, the full sender Gmail address for both username and sender email, and a Google App Password (not the normal Gmail password). Keep the SMTP password in Render secrets only. Optionally set `LDRRMO_SMTP_SENDER_NAME`.
+6. Wait for `/healthz.php` to report healthy, then open the Render service URL. The frontend is built with `VITE_API_URL=/api/index.php`; the frontend and API share HTTPS origin, so no CORS allowlist is needed.
+7. In the Render service's **Shell**, provision the first administrator using the instructions in [Render deployment](backend/SETUP.md). No default account exists.
 
 Use the database provider's persistent storage, automated backups, and monitoring for continuous availability. Render's persistent disk preserves uploads and PHP sessions across deploys, but is not a substitute for database backups or a highly available database plan.
 
@@ -31,6 +32,8 @@ Run the frontend with `pnpm install` and `pnpm dev`. Point `VITE_API_URL` at a r
 
 The PHP API uses server-side PHP sessions, CSRF validation for mutations, prepared statements, server-side role checks, login throttling, password hashing, audit logging, and private authenticated media delivery. IoT readings are accepted only with a registered device's secret token; no simulated readings are produced. Browser polling replaces database realtime subscriptions.
 
-Notification dispatch is persisted. In-app notifications are delivered from the database. Push, SMS, and email remain marked failed with a clear provider-not-configured message until real delivery providers are configured; the interface does not claim to have sent them.
+Notification dispatch is persisted. In-app notifications are delivered from the database. Push, SMS, and broadcast email remain marked failed with a clear provider-not-configured message until real delivery providers are configured; the interface does not claim to have sent them. Resident signup confirmation uses the separately configured SMTP sender described above.
+
+Resident registrations require email confirmation. The API stores only a hash of each one-time, 24-hour confirmation token. Existing profiles are preserved as verified by the [one-time email verification migration](backend/migrate-email-verification.sql); apply it once to an existing database before deploying this version. New databases include the verification schema in `backend/database.sql`.
 
 The `/operations` route provides the operations portal using the same API and database.

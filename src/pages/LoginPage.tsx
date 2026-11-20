@@ -1,18 +1,18 @@
-import { useState } from 'react';
-import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-import { toast } from 'sonner';
-import { getApiSession, apiLogin } from '@/lib/api-client';
-import { useAuth } from '@/contexts/AuthContext';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from '@/components/ui/form';
 import {
   Activity, ArrowRight, Eye, EyeOff, LockKeyhole, Mail, Map,
   MapPin, Shield, TriangleAlert, UserPlus, Waves,
 } from 'lucide-react';
+import { useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
+import { z } from 'zod';
+import { Button } from '@/components/ui/button';
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
+import { Input } from '@/components/ui/input';
+import { useAuth } from '@/contexts/AuthContext';
+import { apiLogin, getApiSession, resendApiUserVerification } from '@/lib/api-client';
 
 const schema = z.object({
   email: z.string().email('Enter a valid email'),
@@ -69,6 +69,8 @@ function Landscape() {
 export default function LoginPage() {
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendAvailable, setResendAvailable] = useState(false);
   const { refreshProfile } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -80,6 +82,7 @@ export default function LoginPage() {
 
   const onSubmit = async (values: FormData) => {
     setLoading(true);
+    setResendAvailable(false);
     try {
       await getApiSession();
       const { user } = await apiLogin(values.email, values.password);
@@ -88,9 +91,26 @@ export default function LoginPage() {
       toast.success('Welcome back!');
       navigate(dest, { replace: true });
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Unable to sign in');
+      const message = error instanceof Error ? error.message : 'Unable to sign in';
+      setResendAvailable(message.includes('Confirm your email address before signing in.'));
+      toast.error(message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const resendConfirmation = async () => {
+    const email = form.getValues('email');
+    if (!email) return;
+    setResending(true);
+    try {
+      await getApiSession();
+      await resendApiUserVerification(email);
+      toast.success('If this address has an unverified resident account, a confirmation email has been sent.');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to request a confirmation email');
+    } finally {
+      setResending(false);
     }
   };
 
@@ -210,6 +230,21 @@ export default function LoginPage() {
               </Button>
             </form>
           </Form>
+
+          {resendAvailable && (
+            <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-center">
+              <p className="text-xs text-slate-700">Didn&apos;t receive the confirmation email?</p>
+              <Button
+                type="button"
+                variant="link"
+                disabled={resending}
+                onClick={() => { void resendConfirmation(); }}
+                className="mt-1 h-auto p-0 text-xs font-semibold text-[#89151f]"
+              >
+                {resending ? 'Sending…' : 'Resend confirmation email'}
+              </Button>
+            </div>
+          )}
 
           <div className="my-5 flex items-center gap-3">
             <div className="h-px flex-1 bg-slate-200" />

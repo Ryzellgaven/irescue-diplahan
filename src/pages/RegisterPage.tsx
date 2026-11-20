@@ -1,16 +1,15 @@
-import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
+import { Activity, AlertTriangle, ArrowRight, Bell, Eye, EyeOff, Mail, MapPin, Shield, UserPlus } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { getApiSession, registerApiUser } from '@/lib/api-client';
-import { useAuth } from '@/contexts/AuthContext';
+import { z } from 'zod';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from '@/components/ui/form';
-import { Activity, AlertTriangle, ArrowRight, Bell, Eye, EyeOff, MapPin, Shield, UserPlus } from 'lucide-react';
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
+import { Input } from '@/components/ui/input';
+import { getApiSession, registerApiUser, resendApiUserVerification, verifyApiUserEmail } from '@/lib/api-client';
 
 const schema = z.object({
   full_name: z.string().min(2, 'Full name is required'),
@@ -29,26 +28,74 @@ type FormData = z.infer<typeof schema>;
 export default function RegisterPage() {
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [confirmationEmail, setConfirmationEmail] = useState<string | null>(null);
+  const [emailSent, setEmailSent] = useState(false);
+  const [verificationStatus, setVerificationStatus] = useState<'ready' | 'verifying' | 'verified' | 'failed' | null>(null);
+  const [verificationError, setVerificationError] = useState('');
   const navigate = useNavigate();
-  const { refreshProfile } = useAuth();
+  const [searchParams] = useSearchParams();
+  const verificationToken = new URLSearchParams(window.location.hash.slice(1)).get('token');
+  const verified = searchParams.get('verified') === '1';
 
   const form = useForm<FormData>({ resolver: zodResolver(schema) });
+
+  useEffect(() => {
+    if (verified) {
+      setVerificationStatus('verified');
+      return;
+    }
+    setVerificationStatus(verificationToken ? 'ready' : null);
+  }, [verificationToken, verified]);
+
+  const confirmEmail = async () => {
+    if (!verificationToken) return;
+    setVerificationStatus('verifying');
+    try {
+      await getApiSession();
+      await verifyApiUserEmail(verificationToken);
+      setVerificationStatus('verified');
+      navigate('/register?verified=1', { replace: true });
+    } catch (error) {
+      setVerificationStatus('failed');
+      setVerificationError(error instanceof Error ? error.message : 'This confirmation link is invalid or has expired.');
+    }
+  };
 
   const onSubmit = async (values: FormData) => {
     setLoading(true);
     try {
       await getApiSession();
-      await registerApiUser({
+      const result = await registerApiUser({
         full_name: values.full_name, email: values.email, password: values.password,
         phone: values.phone, address: values.address,
       });
-      await refreshProfile();
-      toast.success('Account created! Welcome to LDRRMO Diplahan.');
-      navigate('/resident', { replace: true });
+      setConfirmationEmail(result.email);
+      setEmailSent(result.email_sent);
+      if (result.email_sent) {
+        toast.success('Account created. Check your email to confirm your address.');
+      } else {
+        toast.error('Account created, but the confirmation email could not be sent. Check the email service configuration.');
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Unable to create account');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const resendConfirmation = async () => {
+    if (!confirmationEmail) return;
+    setResending(true);
+    try {
+      await getApiSession();
+      await resendApiUserVerification(confirmationEmail);
+      toast.success('If this address has an unverified resident account, a confirmation email has been sent.');
+      setEmailSent(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to request a confirmation email');
+    } finally {
+      setResending(false);
     }
   };
 
@@ -124,7 +171,60 @@ export default function RegisterPage() {
             </p>
           </div>
 
-          <Form {...form}>
+          {verificationStatus === 'ready' ? (
+            <div className="space-y-4 rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-slate-700" role="status">
+              <div className="flex items-start gap-3">
+                <Mail className="mt-0.5 h-5 w-5 shrink-0 text-[#89151f]" />
+                <div>
+                  <h3 className="font-semibold text-slate-900">Confirm your email address</h3>
+                  <p className="mt-1 leading-relaxed">Select the button below to verify this resident account.</p>
+                </div>
+              </div>
+              <Button type="button" onClick={() => { void confirmEmail(); }}
+                className="h-11 w-full rounded-lg bg-[#89151f] text-sm font-semibold text-white hover:bg-[#70111a]">
+                Confirm email
+              </Button>
+            </div>
+          ) : verificationStatus === 'verifying' ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-700" role="status">
+              Verifying your email address…
+            </div>
+          ) : verificationStatus === 'verified' ? (
+            <div className="space-y-4 rounded-xl border border-green-200 bg-green-50 p-5 text-sm text-slate-700" role="status">
+              <div className="flex items-start gap-3">
+                <Mail className="mt-0.5 h-5 w-5 shrink-0 text-green-700" />
+                <div>
+                  <h3 className="font-semibold text-slate-900">Email confirmed</h3>
+                  <p className="mt-1 leading-relaxed">Your resident account is ready. Sign in to continue.</p>
+                </div>
+              </div>
+              <Button type="button" onClick={() => navigate('/login', { replace: true })}
+                className="h-11 w-full rounded-lg bg-[#89151f] text-sm font-semibold text-white hover:bg-[#70111a]">
+                Go to sign in
+              </Button>
+            </div>
+          ) : verificationStatus === 'failed' ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-5 text-sm text-red-800" role="alert">
+              {verificationError}
+            </div>
+          ) : confirmationEmail ? (
+            <div className="space-y-5 rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-slate-700" role="status">
+              <div className="flex items-start gap-3">
+                <Mail className="mt-0.5 h-5 w-5 shrink-0 text-[#89151f]" />
+                <div>
+                  <h3 className="font-semibold text-slate-900">Confirm your email address</h3>
+                  <p className="mt-1 leading-relaxed">
+                    {emailSent ? 'We sent a confirmation email to ' : 'Your account was created, but the confirmation email was not sent to '}
+                    <strong>{confirmationEmail}</strong>. Check your inbox and spam folder.
+                  </p>
+                </div>
+              </div>
+              <Button type="button" disabled={resending} onClick={() => { void resendConfirmation(); }}
+                className="h-11 w-full rounded-lg bg-[#89151f] text-sm font-semibold text-white hover:bg-[#70111a]">
+                {resending ? 'Sending…' : 'Resend confirmation email'}
+              </Button>
+            </div>
+          ) : <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
               <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
                 <FormField control={form.control} name="full_name" render={({ field }) => (
@@ -206,7 +306,7 @@ export default function RegisterPage() {
                 }
               </Button>
             </form>
-          </Form>
+          </Form>}
 
           <div className="mt-6 border-t border-slate-100 pt-5 text-center">
             <p className="text-sm text-slate-500">

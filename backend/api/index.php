@@ -136,6 +136,8 @@ function dispatch(PDO $pdo): void {
     }
     if ($action==='login' && $method==='POST') { csrf(); login($pdo); }
     if ($action==='register' && $method==='POST') { csrf(); registerResident($pdo); }
+    if ($action==='verify-email' && $method==='POST') { csrf(); verifyResidentEmail($pdo); }
+    if ($action==='resend-verification' && $method==='POST') { csrf(); resendResidentVerification($pdo); }
     if ($action==='device-reading' && $method==='POST') { ingestReading($pdo); }
     if ($action==='report-media' && $method==='GET') { serveMedia($pdo); }
     $user=profile($pdo);
@@ -198,7 +200,10 @@ function login(PDO $pdo): never {
     $pdo->exec('DELETE FROM login_attempts WHERE attempted_at < UTC_TIMESTAMP() - INTERVAL 1 DAY');
     $rate=$pdo->prepare('SELECT COUNT(*) FROM login_attempts WHERE ip_address=? AND attempted_at>UTC_TIMESTAMP()-INTERVAL 15 MINUTE'); $rate->execute([$ip]);
     if ((int)$rate->fetchColumn()>=10) fail('Too many sign-in attempts. Wait 15 minutes and try again.',429);
-    $q=$pdo->prepare('SELECT id,email,full_name,password_hash,role,is_active FROM profiles WHERE email=? LIMIT 1'); $q->execute([$email]); $r=$q->fetch();
+    $q=$pdo->prepare('SELECT id,email,full_name,password_hash,role,is_active,email_verified_at FROM profiles WHERE email=? LIMIT 1'); $q->execute([$email]); $r=$q->fetch();
+    if ($r && password_verify($pw, $r['password_hash']) && $r['email_verified_at'] === null) {
+        fail('Confirm your email address before signing in. Check your inbox or request a new confirmation email.', 403);
+    }
     if (!$r||!(bool)$r['is_active']||!password_verify($pw,$r['password_hash'])) {
         $q=$pdo->prepare('INSERT INTO login_attempts(email,ip_address) VALUES(?,?)'); $q->execute([$email,$ip]); fail('Email or password is incorrect.',401);
     }
@@ -208,17 +213,163 @@ function login(PDO $pdo): never {
     ok(['user'=>['id'=>(int)$r['id'],'email'=>$r['email'],'full_name'=>$r['full_name'],'role'=>$r['role']],'csrf_token'=>$_SESSION['csrf_token']]);
 }
 function registerResident(PDO $pdo): never {
+    $_SESSION['csrf_token']??=bin2hex(random_bytes(32));
     $v=input(); $name=text($v['full_name']??null,'Full name',120); $email=strtolower((string)text($v['email']??null,'Email',254));
     if (!filter_var($email,FILTER_VALIDATE_EMAIL)) fail('Enter a valid email address.');
     $pw=$v['password']??null; if (!is_string($pw)||strlen($pw)<8||strlen($pw)>72) fail('Password must be between 8 and 72 bytes.');
     $phone=text($v['phone']??null,'Phone',40); $address=text($v['address']??null,'Address',255);
     try {
-        $q=$pdo->prepare("INSERT INTO profiles(email,full_name,phone,address,password_hash,role) VALUES(?,?,?,?,?,'resident')");
+        $q=$pdo->prepare("INSERT INTO profiles(email,full_name,phone,address,password_hash,role,email_verified_at) VALUES(?,?,?,?,?,'resident',NULL)");
         $q->execute([$email,$name,$phone,$address,password_hash($pw,PASSWORD_DEFAULT)]);
     } catch (PDOException $e) { if ((string)$e->getCode()==='23000') fail('An account with that email already exists.',409); throw $e; }
-    $id=(int)$pdo->lastInsertId(); session_regenerate_id(true); $_SESSION['user_id']=$id; $_SESSION['csrf_token']=bin2hex(random_bytes(32));
+    $id=(int)$pdo->lastInsertId();
     audit($pdo,$id,'resident_registered','profiles',$id);
-    ok(['user'=>['id'=>$id,'email'=>$email,'full_name'=>$name,'role'=>'resident'],'csrf_token'=>$_SESSION['csrf_token']],201);
+    $token=createEmailVerificationToken($pdo,$id);
+    $emailSent=sendResidentVerificationEmail($email,$name,$token);
+    if($emailSent){
+        $q=$pdo->prepare('UPDATE email_verification_tokens SET delivered_at=UTC_TIMESTAMP() WHERE token_hash=?');
+        $q->execute([hash('sha256',$token)]);
+    }
+    ok(['email'=>$email,'email_sent'=>$emailSent,'csrf_token'=>$_SESSION['csrf_token']??null],201);
+}
+function createEmailVerificationToken(PDO $pdo, int $userId): string {
+    $pdo->exec('DELETE FROM email_verification_tokens WHERE expires_at<UTC_TIMESTAMP()-INTERVAL 7 DAY');
+    $token=bin2hex(random_bytes(32));
+    $q=$pdo->prepare('INSERT INTO email_verification_tokens(user_id,token_hash,expires_at) VALUES(?,?,UTC_TIMESTAMP()+INTERVAL 24 HOUR)');
+    $q->execute([$userId,hash('sha256',$token)]);
+    return $token;
+}
+function verifyResidentEmail(PDO $pdo): never {
+    $v=input(); $token=$v['token']??null;
+    if(!is_string($token)||!preg_match('/^[a-f0-9]{64}$/',$token))fail('This confirmation link is invalid or has expired.',422);
+    $pdo->beginTransaction();
+    try {
+        $q=$pdo->prepare('SELECT user_id FROM email_verification_tokens WHERE token_hash=? AND used_at IS NULL AND expires_at>UTC_TIMESTAMP() FOR UPDATE');
+        $q->execute([hash('sha256',$token)]); $verification=$q->fetch();
+        if(!$verification){$pdo->rollBack();fail('This confirmation link is invalid or has expired.',422);}
+        $userId=(int)$verification['user_id'];
+        $q=$pdo->prepare('UPDATE profiles SET email_verified_at=COALESCE(email_verified_at,UTC_TIMESTAMP()) WHERE id=? AND role=\'resident\'');
+        $q->execute([$userId]);
+        if($q->rowCount()===0){
+            $q=$pdo->prepare('SELECT email_verified_at FROM profiles WHERE id=? AND role=\'resident\'');$q->execute([$userId]);
+            if($q->fetchColumn()===false){$pdo->rollBack();fail('This confirmation link is invalid or has expired.',422);}
+        }
+        $q=$pdo->prepare('UPDATE email_verification_tokens SET used_at=UTC_TIMESTAMP() WHERE user_id=? AND used_at IS NULL');
+        $q->execute([$userId]);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if($pdo->inTransaction())$pdo->rollBack();
+        throw $e;
+    }
+    ok(['verified'=>true]);
+}
+function resendResidentVerification(PDO $pdo): never {
+    $v=input(); $email=strtolower((string)text($v['email']??null,'Email',254));
+    if(!filter_var($email,FILTER_VALIDATE_EMAIL))fail('Enter a valid email address.');
+    $q=$pdo->prepare("SELECT id,full_name FROM profiles WHERE email=? AND role='resident' AND email_verified_at IS NULL LIMIT 1");
+    $q->execute([$email]); $user=$q->fetch();
+    if(!$user)ok(['requested'=>true]);
+    $userId=(int)$user['id'];
+    $q=$pdo->prepare('SELECT COUNT(*) FROM email_verification_tokens WHERE user_id=? AND delivered_at IS NOT NULL AND created_at>UTC_TIMESTAMP()-INTERVAL 1 HOUR');
+    $q->execute([$userId]);
+    if((int)$q->fetchColumn()>=5)fail('Too many confirmation emails requested. Try again later.',429);
+    $q=$pdo->prepare('SELECT COUNT(*) FROM email_verification_tokens WHERE user_id=? AND delivered_at IS NOT NULL AND created_at>UTC_TIMESTAMP()-INTERVAL 1 MINUTE');
+    $q->execute([$userId]);
+    if((int)$q->fetchColumn()>0)fail('Please wait a minute before requesting another confirmation email.',429);
+    $token=createEmailVerificationToken($pdo,$userId);
+    if(!sendResidentVerificationEmail($email,(string)$user['full_name'],$token)){
+        $q=$pdo->prepare('UPDATE email_verification_tokens SET used_at=UTC_TIMESTAMP() WHERE user_id=? AND token_hash=?');
+        $q->execute([$userId,hash('sha256',$token)]);
+        fail('The confirmation email could not be sent. Check the email service configuration and try again.',503);
+    }
+    $q=$pdo->prepare('UPDATE email_verification_tokens SET delivered_at=UTC_TIMESTAMP() WHERE token_hash=?');
+    $q->execute([hash('sha256',$token)]);
+    ok(['requested'=>true]);
+}
+function sendResidentVerificationEmail(string $email,string $name,string $token): bool {
+    try {
+        $host=getenv('LDRRMO_SMTP_HOST');
+        $portText=getenv('LDRRMO_SMTP_PORT')?:'465';
+        $username=getenv('LDRRMO_SMTP_USERNAME');
+        $password=getenv('LDRRMO_SMTP_PASSWORD');
+        $senderEmail=getenv('LDRRMO_SMTP_SENDER_EMAIL');
+        $senderName=getenv('LDRRMO_SMTP_SENDER_NAME')?:'LDRRMO Diplahan';
+        $appUrl=rtrim((string)getenv('LDRRMO_APP_URL'),'/');
+        $appUrlParts=parse_url($appUrl);
+        if(!$host||!$username||$password===false||$password===''||!$senderEmail||!filter_var($senderEmail,FILTER_VALIDATE_EMAIL)||!filter_var($email,FILTER_VALIDATE_EMAIL)||!is_array($appUrlParts)||!isset($appUrlParts['host'])||!in_array($appUrlParts['scheme']??'', ['https','http'],true)||isset($appUrlParts['query'])||isset($appUrlParts['fragment'])){
+            throw new RuntimeException('Email delivery is not fully configured.');
+        }
+        $port=filter_var($portText,FILTER_VALIDATE_INT,['options'=>['min_range'=>1,'max_range'=>65535]]);
+        if($port===false)throw new RuntimeException('The configured SMTP port is invalid.');
+        if(preg_match('/[\r\n]/',$host.$username.$senderName.$senderEmail))throw new RuntimeException('SMTP configuration contains invalid header characters.');
+        $link=$appUrl.'/register#token='.rawurlencode($token);
+        $body="Hello {$name},\r\n\r\nConfirm your email address for your LDRRMO Diplahan resident account by opening this link:\r\n{$link}\r\n\r\nThis link expires in 24 hours. If you did not create this account, you can ignore this message.\r\n";
+        $headers=[
+            'From: '.mb_encode_mimeheader($senderName,'UTF-8','B')." <{$senderEmail}>",
+            "To: <{$email}>",
+            'Subject: '.mb_encode_mimeheader('Confirm your LDRRMO Diplahan account','UTF-8','B'),
+            'Date: '.gmdate('D, d M Y H:i:s').' +0000',
+            'Message-ID: <'.bin2hex(random_bytes(16)).'@'.substr(strrchr($senderEmail,'@'),1).'>',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=UTF-8',
+            'Content-Transfer-Encoding: base64',
+        ];
+        $mime=implode("\r\n",$headers)."\r\n\r\n".rtrim(chunk_split(base64_encode($body),76,"\r\n"));
+        $transport=$port===465?'ssl://':'tcp://';
+        $context=stream_context_create(['ssl'=>['verify_peer'=>true,'verify_peer_name'=>true,'peer_name'=>$host]]);
+        $socket=@stream_socket_client($transport.$host.':'.$port,$errno,$errstr,10,STREAM_CLIENT_CONNECT,$context);
+        if(!$socket)throw new RuntimeException('Cannot connect to the configured SMTP server.');
+        stream_set_timeout($socket,10);
+        try {
+            smtpExpect($socket,[220]);
+            smtpCommand($socket,"EHLO {$host}",[250]);
+            if($port!==465){
+                smtpCommand($socket,'STARTTLS',[220]);
+                if(!stream_socket_enable_crypto($socket,true,STREAM_CRYPTO_METHOD_TLS_CLIENT))throw new RuntimeException('Could not establish SMTP TLS.');
+                smtpCommand($socket,"EHLO {$host}",[250]);
+            }
+            smtpCommand($socket,'AUTH LOGIN',[334]);
+            smtpCommand($socket,base64_encode($username),[334]);
+            smtpCommand($socket,base64_encode($password),[235]);
+            smtpCommand($socket,"MAIL FROM:<{$senderEmail}>",[250]);
+            smtpCommand($socket,"RCPT TO:<{$email}>",[250,251,252]);
+            smtpCommand($socket,'DATA',[354]);
+            $mime=preg_replace('/^\./m','..',$mime)??$mime;
+            smtpWrite($socket,$mime."\r\n.\r\n");
+            smtpExpect($socket,[250]);
+            smtpCommand($socket,'QUIT',[221]);
+        } finally {
+            fclose($socket);
+        }
+        return true;
+    } catch(Throwable $e) {
+        error_log('[LDRRMO API] Confirmation email delivery failed: '.$e->getMessage());
+        return false;
+    }
+}
+function smtpCommand($socket,string $command,array $expected): string {
+    smtpWrite($socket,$command."\r\n");
+    return smtpExpect($socket,$expected);
+}
+function smtpWrite($socket,string $data): void {
+    $length=strlen($data);$offset=0;
+    while($offset<$length){
+        $written=fwrite($socket,substr($data,$offset));
+        if($written===false||$written===0)throw new RuntimeException('SMTP message transmission failed.');
+        $offset+=$written;
+    }
+}
+function smtpExpect($socket,array $expected): string {
+    $response='';
+    do {
+        $line=fgets($socket,2048);
+        if($line===false)throw new RuntimeException('SMTP server closed the connection unexpectedly.');
+        $response.=$line;
+        if(strlen($response)>8192)throw new RuntimeException('SMTP server response exceeded the size limit.');
+    } while(preg_match('/^\d{3}-/',$line)===1);
+    $code=(int)substr($line,0,3);
+    if(!in_array($code,$expected,true))throw new RuntimeException("SMTP server returned status {$code}.");
+    return $response;
 }
 function updateSelf(PDO $pdo,array $u): never {
     $v=input(); $fields=[]; $params=[];

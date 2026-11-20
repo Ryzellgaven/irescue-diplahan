@@ -22,6 +22,16 @@ In the service's **Environment** settings, set:
 
 For a TLS-required MySQL provider, add its CA certificate as a Render secret file and set `LDRRMO_DB_SSL_CA` to the file path. The API verifies that certificate when configured. Never add database credentials to frontend variables or Git.
 
+Configure resident confirmation email using these Render environment variables:
+
+- `LDRRMO_APP_URL`: the public HTTPS URL of this application.
+- `LDRRMO_SMTP_HOST`, `LDRRMO_SMTP_PORT`, `LDRRMO_SMTP_USERNAME`, `LDRRMO_SMTP_PASSWORD`, and `LDRRMO_SMTP_SENDER_EMAIL`.
+- `LDRRMO_SMTP_SENDER_NAME` (optional).
+
+For Gmail SMTP, use `smtp.gmail.com`, port `465`, the Gmail address as both username and sender address, and a Google App Password. Put the password in Render's secret environment setting; never commit it. The API sends a confirmation link that expires after 24 hours, and unverified residents cannot sign in. Resends are limited to one per minute and five per hour per account.
+
+For an existing database, back it up and apply `backend/migrate-email-verification.sql` exactly once before deploying. It marks pre-existing profiles verified and creates the token table. A new database receives these structures from `backend/database.sql`.
+
 Wait for the `/healthz.php` check to pass. It verifies database connectivity, so the service will not become healthy until all database settings are correct and the provider allows the connection. The Vite bundle calls `/api/index.php` on the same origin; no CORS configuration is needed.
 
 ## 3. Provision the first administrator

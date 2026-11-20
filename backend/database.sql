@@ -6,11 +6,25 @@ CREATE TABLE IF NOT EXISTS profiles (
   address VARCHAR(255) NULL,
   role ENUM('resident','ldrrmo_staff','supervisor','admin') NOT NULL DEFAULT 'resident',
   is_active TINYINT(1) NOT NULL DEFAULT 1,
+  email_verified_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
   avatar_url VARCHAR(500) NULL,
   password_hash VARCHAR(255) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_profiles_role_active (role,is_active)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS email_verification_tokens (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  token_hash CHAR(64) NOT NULL UNIQUE,
+  expires_at TIMESTAMP NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  delivered_at TIMESTAMP NULL,
+  used_at TIMESTAMP NULL,
+  CONSTRAINT fk_email_verification_user FOREIGN KEY(user_id) REFERENCES profiles(id) ON DELETE CASCADE,
+  INDEX idx_email_verification_user_created(user_id,created_at),
+  INDEX idx_email_verification_expiry(expires_at)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS evacuation_centers (

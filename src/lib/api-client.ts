@@ -202,11 +202,23 @@ export function registerApiSensor(sensor: {
 export function registerApiUser(payload: {
   full_name: string; email: string; password: string; phone: string; address: string;
 }) {
-  return apiRequest<{ user: ApiUser; csrf_token: string }>('register', {
+  return apiRequest<{ email: string; email_sent: boolean; csrf_token: string }>('register', {
     method: 'POST', body: JSON.stringify(payload),
   }).then(session => {
     csrfToken = session.csrf_token;
     return session;
+  });
+}
+
+export function verifyApiUserEmail(token: string) {
+  return apiRequest<{ verified: boolean }>('verify-email', {
+    method: 'POST', body: JSON.stringify({ token }),
+  });
+}
+
+export function resendApiUserVerification(email: string) {
+  return apiRequest<{ requested: boolean }>('resend-verification', {
+    method: 'POST', body: JSON.stringify({ email }),
   });
 }
 
