@@ -1,0 +1,2 @@
+[functions.ldrrmo-api]
+verify_jwt = false
